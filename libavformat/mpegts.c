@@ -30,6 +30,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/avassert.h"
 #include "libavutil/dovi_meta.h"
+#include "libavutil/time.h"
 #include "libavcodec/bytestream.h"
 #include "libavcodec/get_bits.h"
 #include "libavcodec/opus.h"
@@ -177,6 +178,12 @@ struct MpegTSContext {
 
     AVStream *epg_stream;
     AVBufferPool* pools[32];
+
+    /**
+     * Timeout in AV_TIME_BASE units, until at least one packet is read
+     * from the stream.
+     */
+    int64_t packet_read_timeout;
 };
 
 #define MPEGTS_OPTIONS \
@@ -198,6 +205,8 @@ static const AVOption options[] = {
      {.i64 = 0}, 0, 1, 0 },
     {"skip_clear", "skip clearing programs", offsetof(MpegTSContext, skip_clear), AV_OPT_TYPE_BOOL,
      {.i64 = 0}, 0, 1, 0 },
+    {"packet_read_timeout", "Maximum time utnil at least one packet is successfully read from the stream", offsetof(MpegTSContext, packet_read_timeout), AV_OPT_TYPE_INT64,
+     {.i64 = 0 }, 0, INT64_MAX, AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };
 
@@ -2936,6 +2945,7 @@ static int handle_packets(MpegTSContext *ts, int64_t nb_packets)
     const uint8_t *data;
     int64_t packet_num;
     int ret = 0;
+    time_t start = 0;
 
     if (avio_tell(s->pb) != ts->last_pos) {
         int i;
@@ -2960,8 +2970,14 @@ static int handle_packets(MpegTSContext *ts, int64_t nb_packets)
     ts->stop_parse = 0;
     packet_num = 0;
     memset(packet + TS_PACKET_SIZE, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    start = av_gettime_relative();
     for (;;) {
         packet_num++;
+        if (ts->packet_read_timeout > 0 && (av_gettime_relative() - start > ts->packet_read_timeout)) {
+            av_log(ts->stream, AV_LOG_TRACE, "No packet after %"PRId64"ms\n", ts->packet_read_timeout/1000);
+            break;
+        }
+
         if (nb_packets != 0 && packet_num >= nb_packets ||
             ts->stop_parse > 1) {
             ret = AVERROR(EAGAIN);
